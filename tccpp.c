@@ -46,7 +46,7 @@ ST_DATA TinyAlloc *cstr_alloc;
 
 static TokenSym *hash_ident[TOK_HASH_SIZE];
 static char token_buf[STRING_MAX_SIZE + 1];
-static CString cstr_buf;
+static CString cstr_buf, cstr_mbuf;
 static TokenString tokstr_buf;
 static unsigned char isidnum_table[256 - CH_EOF];
 /* isidnum_table flags: */
@@ -1288,12 +1288,11 @@ static int macro_is_equal(const int *a, const int *b)
     CValue cv;
     int t;
     while (*a && *b) {
-        /* first time preallocate static cstr_buf, next time only reset position to start */
-        cstr_reset(&cstr_buf);
+        cstr_reset(&cstr_mbuf);
         TOK_GET(&t, &a, &cv);
-        cstr_cat(&cstr_buf, get_tok_str(t, &cv), 0);
+        cstr_cat(&cstr_mbuf, get_tok_str(t, &cv), 0);
         TOK_GET(&t, &b, &cv);
-        if (strcmp(cstr_buf.data, get_tok_str(t, &cv)))
+        if (strcmp(cstr_mbuf.data, get_tok_str(t, &cv)))
             return 0;
     }
     return !(*a || *b);
@@ -3614,6 +3613,8 @@ ST_FUNC void preprocess_new(void)
     memset(hash_ident, 0, TOK_HASH_SIZE * sizeof(TokenSym *));
     cstr_new(&cstr_buf);
     cstr_realloc(&cstr_buf, STRING_MAX_SIZE);
+    cstr_new(&cstr_mbuf);
+    cstr_realloc(&cstr_mbuf, STRING_MAX_SIZE);
     tok_str_new(&tokstr_buf);
     tok_str_realloc(&tokstr_buf, TOKSTR_MAX_SIZE);
     
@@ -3653,6 +3654,7 @@ ST_FUNC void preprocess_delete(void)
     /* free static buffers */
     cstr_free(&tokcstr);
     cstr_free(&cstr_buf);
+    cstr_free(&cstr_mbuf);
     tok_str_free(tokstr_buf.str);
 
     /* free allocators */
