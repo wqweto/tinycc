@@ -461,7 +461,10 @@ typedef struct AttributeDef {
 /* symbol management */
 typedef struct Sym {
     int v;    /* symbol token */
-    int asm_label;    /* associated asm label */
+    union {
+        int asm_label;    /* associated asm label */
+        int scope;  /* scope level for locals */
+    };
     union {
         long r;    /* associated register */
         struct Attribute a;
@@ -616,7 +619,7 @@ typedef struct CachedInclude {
 
 #ifdef CONFIG_TCC_ASM
 typedef struct ExprValue {
-    uint32_t v;
+    uint64_t v;
     Sym *sym;
 } ExprValue;
 
@@ -781,7 +784,6 @@ struct TCCState {
 	LINE_MACRO_OUTPUT_FORMAT_STD
     } Pflag; /* -P switch */
     char dflag; /* -dX value */
-    FILE *dffp;
 
     /* for -MD/-MF: collected dependencies for this compilation */
     char **target_deps;
@@ -864,7 +866,6 @@ struct TCCState {
     char *option_m; /* only -m32/-m64 handled */
     int print_search_dirs; /* option */
     int option_r; /* option -r */
-    int option_C; /* option -C, keep comments when -E */
     int do_bench; /* option -bench */
     int gen_deps; /* option -MD  */
     char *deps_outfile; /* option -MF */
@@ -1317,7 +1318,6 @@ ST_INLN void define_push(int v, int macro_type, TokenString *str, Sym *first_arg
 ST_FUNC void define_undef(Sym *s);
 ST_INLN Sym *define_find(int v);
 ST_FUNC void free_defines(Sym *b);
-ST_FUNC void print_defines(void);
 ST_FUNC Sym *label_find(int v);
 ST_FUNC Sym *label_push(Sym **ptop, int v, int flags);
 ST_FUNC void label_pop(Sym **ptop, Sym *slast);
@@ -1474,7 +1474,7 @@ ST_FUNC void *tcc_get_symbol_err(TCCState *s, const char *name);
 #ifndef TCC_TARGET_PE
 ST_FUNC int tcc_load_dll(TCCState *s1, int fd, const char *filename, int level);
 ST_FUNC int tcc_load_ldscript(TCCState *s1);
-ST_FUNC uint8_t *parse_comment(uint8_t *p, int skip);
+ST_FUNC uint8_t *parse_comment(uint8_t *p);
 ST_FUNC void minp(void);
 ST_INLN void inp(void);
 ST_FUNC int handle_eob(void);

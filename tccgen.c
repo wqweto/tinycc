@@ -50,10 +50,10 @@ ST_DATA int nb_sym_pools;
 
 ST_DATA Sym *global_stack;
 ST_DATA Sym *local_stack;
-ST_DATA Sym *scope_stack_bottom;
 ST_DATA Sym *define_stack;
 ST_DATA Sym *global_label_stack;
 ST_DATA Sym *local_label_stack;
+static int local_scope;
 
 ST_DATA int vlas_in_scope; /* number of VLAs that are currently in scope */
 ST_DATA int vla_sp_root_loc; /* vla_sp_loc for SP before any VLAs were pushed */
@@ -166,12 +166,7 @@ ST_INLN void sym_free(Sym *sym)
 ST_FUNC Sym *sym_push2(Sym **ps, int v, int t, long c)
 {
     Sym *s;
-    if (ps == &local_stack) {
-        for (s = *ps; s && s != scope_stack_bottom; s = s->prev)
-            if (!(v & SYM_FIELD) && (v & ~SYM_STRUCT) < SYM_FIRST_ANOM && s->v == v)
-                tcc_error("incompatible types for redefinition of '%s'",
-                          get_tok_str(v, NULL));
-    }
+
     s = sym_malloc();
     s->asm_label = 0;
     s->v = v;
@@ -192,15 +187,8 @@ ST_FUNC Sym *sym_push2(Sym **ps, int v, int t, long c)
    of the symbol stack */
 ST_FUNC Sym *sym_find2(Sym *s, int v)
 {
-#ifdef CONFIG_TCC_EXSYMTAB
-    v &= ~SYM_EXTENDED;
-#endif
     while (s) {
-#ifdef CONFIG_TCC_EXSYMTAB
-        if ((s->v & ~SYM_EXTENDED) == v)
-#else
         if (s->v == v)
-#endif
             return s;
         else if (s->v == -1)
             return NULL;
@@ -212,9 +200,6 @@ ST_FUNC Sym *sym_find2(Sym *s, int v)
 /* structure lookup */
 ST_INLN Sym *struct_find(int v)
 {
-#ifdef CONFIG_TCC_EXSYMTAB
-    v &= ~SYM_EXTENDED;
-#endif
     v -= TOK_IDENT;
     if ((unsigned)v >= (unsigned)(tok_ident - TOK_IDENT))
         return NULL;
@@ -224,42 +209,9 @@ ST_INLN Sym *struct_find(int v)
 /* find an identifier */
 ST_INLN Sym *sym_find(int v)
 {
-#ifdef CONFIG_TCC_EXSYMTAB
-    int is_extended = v & SYM_EXTENDED;
-    v &= ~SYM_EXTENDED;
-#endif
     v -= TOK_IDENT;
-
-    /* Does not exist in our table! The best we can do is return null. XXX Maybe
-     * should warn if this happens with an extended symbol, since that would be
-     * a sign of an inconsistent internal state. */
     if ((unsigned)v >= (unsigned)(tok_ident - TOK_IDENT))
         return NULL;
-
-#ifdef CONFIG_TCC_EXSYMTAB
-    /* If this is an extended symbol table reference, then we need to make sure
-     * that the extended symbol reference callback gets fired, but only once.
-     * We'll modify the TokenSym's tok field and remove the flag if the callback
-     * has been fired, so check if the TokenSym's tok field has the flag.
-     */
-    if (is_extended && (table_ident[v]->tok & SYM_EXTENDED)) {
-        TokenSym *ts = table_ident[v];
-
-        /* Clear the extended symbol flag in the TokenSym. */
-        ts->tok &= ~SYM_EXTENDED;
-
-        /* XXX If we don't have the callback function... throw error? */
-        if ((ts->sym_identifier != NULL)
-            && (ts->sym_identifier->type.t & VT_EXTERN) 
-            && (tcc_state->symtab_sym_used_callback != NULL))
-        {
-            /* Call the function, passing the symbol name. */
-            tcc_state->symtab_sym_used_callback(ts->str, ts->len,
-                tcc_state->symtab_callback_data);
-        }
-    }
-#endif
-
     return table_ident[v]->sym_identifier;
 }
 
@@ -271,23 +223,8 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, int c)
 
     if (local_stack)
         ps = &local_stack;
-    else {
-#ifdef CONFIG_TCC_EXSYMTAB
-        /* Global symbol stack. This is OK for the local symbol stack, but don't allow
-         * this for symbols that are in the extended symbol stack. There seem to be
-         * some issues associated with copying *all* TokenSyms, so this needs to be
-         * ironed out. For now, I'm removing the check. */
-         //
-         // if (v & SYM_EXTENDED) {
-         //     tcc_error("Cannot use name '%s' as a global variable, it is already in the "
-         //               "extended symbol table.", get_tok_str(v, 0));
-         // }
-#endif
+    else
         ps = &global_stack;
-    }
-#ifdef CONFIG_TCC_EXSYMTAB
-    v &= ~SYM_EXTENDED;
-#endif
     s = sym_push2(ps, v, type->t, c);
     s->type.ref = type->ref;
     s->r = r;
@@ -302,6 +239,10 @@ ST_FUNC Sym *sym_push(int v, CType *type, int r, int c)
             ps = &ts->sym_identifier;
         s->prev_tok = *ps;
         *ps = s;
+        s->scope = local_scope;
+        if (s->prev_tok && s->prev_tok->scope == s->scope)
+            tcc_error("redeclaration of '%s'",
+                get_tok_str(v & ~SYM_STRUCT, NULL));
     }
     return s;
 }
@@ -312,13 +253,8 @@ ST_FUNC Sym *global_identifier_push(int v, int t, int c)
     Sym *s, **ps;
     s = sym_push2(&global_stack, v, t, c);
     /* don't record anonymous symbol */
-#ifdef CONFIG_TCC_EXSYMTAB
-    if ((v & ~SYM_EXTENDED) < SYM_FIRST_ANOM) {
-        ps = &table_ident[(v & ~SYM_EXTENDED) - TOK_IDENT]->sym_identifier;
-#else
     if (v < SYM_FIRST_ANOM) {
         ps = &table_ident[v - TOK_IDENT]->sym_identifier;
-#endif
         /* modify the top most local identifier, so that
            sym_identifier will point to 's' when popped */
         while (*ps != NULL)
@@ -326,12 +262,6 @@ ST_FUNC Sym *global_identifier_push(int v, int t, int c)
         s->prev_tok = NULL;
         *ps = s;
     }
-#ifdef CONFIG_TCC_EXSYMTAB
-    if (v & SYM_EXTENDED) {
-        tcc_warning("pushing global identifier with name from extended symbol table '%s'",
-               get_tok_str(v, 0));
-    }
-#endif
     return s;
 }
 
@@ -348,11 +278,7 @@ ST_FUNC void sym_pop(Sym **ptop, Sym *b)
         v = s->v;
         /* remove symbol in token array */
         /* XXX: simplify */
-#ifdef CONFIG_TCC_EXSYMTAB
-        if (!(v & SYM_FIELD) && (v & ~(SYM_STRUCT|SYM_EXTENDED)) < SYM_FIRST_ANOM) {
-#else
         if (!(v & SYM_FIELD) && (v & ~SYM_STRUCT) < SYM_FIRST_ANOM) {
-#endif
             ts = table_ident[(v & ~SYM_STRUCT) - TOK_IDENT];
             if (v & SYM_STRUCT)
                 ps = &ts->sym_struct;
@@ -1772,11 +1698,10 @@ ST_FUNC void gen_op(int op)
     t2 = vtop[0].type.t;
     bt1 = t1 & VT_BTYPE;
     bt2 = t2 & VT_BTYPE;
-#ifdef CONFIG_TCC_EXSYMTAB
-    type1.ref = NULL;
-#endif
-
-    if (bt1 == VT_PTR || bt2 == VT_PTR) {
+        
+    if (bt1 == VT_STRUCT || bt2 == VT_STRUCT) {
+        tcc_error("operation on a struct");
+    } else if (bt1 == VT_PTR || bt2 == VT_PTR) {
         /* at least one operand is a pointer */
         /* relationnal op: must be both pointers */
         if (op >= TOK_ULT && op <= TOK_LOR) {
@@ -1897,8 +1822,6 @@ ST_FUNC void gen_op(int op)
             (t2 & (VT_BTYPE | VT_UNSIGNED)) == (VT_LLONG | VT_UNSIGNED))
             t |= VT_UNSIGNED;
         goto std_op;
-    } else if (bt1 == VT_STRUCT || bt2 == VT_STRUCT) {
-        tcc_error("comparison of struct");
     } else {
         /* integer operations */
         t = VT_INT;
@@ -2396,13 +2319,6 @@ static int compare_types(CType *type1, CType *type2, int unqualified)
         type2 = pointed_type(type2);
         return is_compatible_types(type1, type2);
     } else if (bt1 == VT_STRUCT) {
-#ifdef CONFIG_TCC_EXSYMTAB
-        /* XXX This currently runs into trouble with extended symbol
-         * tables when using the common idiom
-         * "typedef struct { ... } <typename>"
-         * This probably needs to be fixed by changing the copy_ctype
-         * macro in tccexsymtab.c. */
-#endif
         return (type1->ref == type2->ref);
     } else if (bt1 == VT_FUNC) {
         return is_compatible_func(type1, type2);
@@ -2490,11 +2406,7 @@ static void type_to_str(char *buf, int buf_size,
             tstr = "enum ";
         pstrcat(buf, buf_size, tstr);
         v = type->ref->v & ~SYM_STRUCT;
-#ifdef CONFIG_TCC_EXSYMTAB
-        if ((v & ~SYM_EXTENDED) >= SYM_FIRST_ANOM)
-#else
         if (v >= SYM_FIRST_ANOM)
-#endif
             pstrcat(buf, buf_size, "<anonymous>");
         else
             pstrcat(buf, buf_size, get_tok_str(v, NULL));
@@ -3015,9 +2927,9 @@ static void struct_decl(CType *type, AttributeDef *ad, int u)
         if (v < TOK_IDENT)
             expect("struct/union/enum name");
         s = struct_find(v);
-        if (s) {
+        if (s && (s->scope == local_scope || (tok != '{' && tok != ';'))) {
             if (s->type.t != a)
-                tcc_error("invalid type");
+                tcc_error("redefinition of '%s'", get_tok_str(v, NULL));
             goto do_decl;
         }
     } else {
@@ -3511,9 +3423,6 @@ static void post_type(CType *type, AttributeDef *ad)
     Sym **plast, *s, *first;
     AttributeDef ad1;
     CType pt;
-#ifdef CONFIG_TCC_EXSYMTAB
-    pt.ref = NULL;
-#endif
 
     if (tok == '(') {
         /* function declaration */
@@ -3709,8 +3618,7 @@ static void type_decl(CType *type, AttributeDef *ad, int *v, int td)
     type->t |= storage;
     if (tok == TOK_ATTRIBUTE1 || tok == TOK_ATTRIBUTE2)
         parse_attribute(ad);
-
-    /* Done unless this is a function declaration. */
+    
     if (!type1.t)
         return;
     /* append type at the end of type1 */
@@ -4316,9 +4224,6 @@ ST_FUNC void unary(void)
             s = vtop->type.ref;
             /* find field */
             tok |= SYM_FIELD;
-#ifdef CONFIG_TCC_EXSYMTAB
-            tok &= ~SYM_EXTENDED;
-#endif
             while ((s = s->next) != NULL) {
                 if (s->v == tok)
                     break;
@@ -4971,7 +4876,7 @@ static void block(int *bsym, int *csym, int *case_sym, int *def_sym,
                   int case_reg, int is_expr)
 {
     int a, b, c, d;
-    Sym *s, *frame_bottom;
+    Sym *s;
 
     /* generate line number info */
     if (tcc_state->do_debug &&
@@ -5025,10 +4930,8 @@ static void block(int *bsym, int *csym, int *case_sym, int *def_sym,
         next();
         /* record local declaration stack position */
         s = local_stack;
-        frame_bottom = sym_push2(&local_stack, SYM_FIELD, 0, 0);
-        frame_bottom->next = scope_stack_bottom;
-        scope_stack_bottom = frame_bottom;
         llabel = local_label_stack;
+        ++local_scope;
         
         /* handle local labels declarations */
         if (tok == TOK_LABEL) {
@@ -5075,7 +4978,7 @@ static void block(int *bsym, int *csym, int *case_sym, int *def_sym,
             }
         }
         /* pop locally defined symbols */
-        scope_stack_bottom = scope_stack_bottom->next;
+        --local_scope;
         sym_pop(&local_stack, s);
         
         /* Pop VLA frames and restore stack pointer if required */
@@ -5174,9 +5077,7 @@ static void block(int *bsym, int *csym, int *case_sym, int *def_sym,
         next();
         skip('(');
         s = local_stack;
-        frame_bottom = sym_push2(&local_stack, SYM_FIELD, 0, 0);
-        frame_bottom->next = scope_stack_bottom;
-        scope_stack_bottom = frame_bottom;
+        ++local_scope;
         if (tok != ';') {
             /* c99 for-loop init decl? */
             if (!decl0(VT_LOCAL, 1)) {
@@ -5211,8 +5112,9 @@ static void block(int *bsym, int *csym, int *case_sym, int *def_sym,
             gjmp_addr(c);
         gsym(a);
         gsym_addr(b, c);
-        scope_stack_bottom = scope_stack_bottom->next;
+        --local_scope;
         sym_pop(&local_stack, s);
+
     } else 
     if (tok == TOK_DO) {
         next();
@@ -6246,9 +6148,13 @@ static void gen_function(Sym *sym)
     /* put debug symbol */
     if (tcc_state->do_debug)
         put_func_debug(sym);
+
     /* push a dummy symbol to enable local sym storage */
     sym_push2(&local_stack, SYM_FIELD, 0, 0);
+    local_scope = 1; /* for function parameters */
     gfunc_prolog(&sym->type);
+    local_scope = 0;
+
 #ifdef CONFIG_TCC_BCHECK
     if (tcc_state->do_bounds_check && !strcmp(funcname, "main")) {
         int i;
@@ -6269,7 +6175,7 @@ static void gen_function(Sym *sym)
     cur_text_section->data_offset = ind;
     label_pop(&global_label_stack, NULL);
     /* reset local stack */
-    scope_stack_bottom = NULL;
+    local_scope = 0;
     sym_pop(&local_stack, NULL);
     /* end of function */
     /* patch symbol size */
@@ -6522,7 +6428,16 @@ static int decl0(int l, int is_for_loop_init)
                 if (btype.t & VT_TYPEDEF) {
                     /* save typedefed type  */
                     /* XXX: test storage specifiers ? */
-                    sym = sym_push(v, &type, 0, 0);
+                    sym = sym_find(v);
+                    if (sym && sym->scope == local_scope) {
+                        if (!is_compatible_types(&sym->type, &type)
+                            || !(sym->type.t & VT_TYPEDEF))
+                            tcc_error("incompatible redefinition of '%s'",
+                                get_tok_str(v, NULL));
+                        sym->type = type;
+                    } else {
+                        sym = sym_push(v, &type, 0, 0);
+                    }
                     sym->a = ad.a;
                     sym->type.t |= VT_TYPEDEF;
                 } else {

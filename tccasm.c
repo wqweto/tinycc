@@ -32,6 +32,8 @@ ST_FUNC int asm_get_local_label_name(TCCState *s1, unsigned int n)
 }
 
 ST_FUNC void asm_expr(TCCState *s1, ExprValue *pe);
+static int tcc_assemble_internal(TCCState *s1, int do_preprocess);
+static Sym sym_dot;
 
 /* We do not use the C expression parser to handle symbols. Maybe the
    C expression parser could be tweaked to do so. */
@@ -39,7 +41,8 @@ ST_FUNC void asm_expr(TCCState *s1, ExprValue *pe);
 static void asm_expr_unary(TCCState *s1, ExprValue *pe)
 {
     Sym *sym;
-    int op, n, label;
+    int op, label;
+    long n;
     const char *p;
 
     switch(tok) {
@@ -100,6 +103,14 @@ static void asm_expr_unary(TCCState *s1, ExprValue *pe)
         next();
         asm_expr(s1, pe);
         skip(')');
+        break;
+    case '.':
+        pe->v = 0;
+        pe->sym = &sym_dot;
+        sym_dot.type.t = VT_VOID | VT_STATIC;
+        sym_dot.r = cur_text_section->sh_num;
+        sym_dot.jnext = ind;
+        next();
         break;
     default:
         if (tok >= TOK_IDENT) {
@@ -474,6 +485,33 @@ static void asm_parse_directive(TCCState *s1)
             }
         }
         break;
+    case TOK_ASMDIR_rept:
+        {
+            int repeat;
+            TokenString init_str;
+            ParseState saved_parse_state = {0};
+            next();
+            repeat = asm_int_expr(s1);
+            tok_str_new(&init_str);
+            next();
+            while ((tok != TOK_ASMDIR_endr) && (tok != CH_EOF)) {
+                tok_str_add_tok(&init_str);
+                next();
+            }
+            if (tok == CH_EOF) tcc_error("we at end of file, .endr not found");
+            next();
+            tok_str_add(&init_str, -1);
+            tok_str_add(&init_str, 0);
+            save_parse_state(&saved_parse_state);
+            begin_macro(&init_str, 0);
+            while (repeat-- > 0) {
+                tcc_assemble_internal(s1, (parse_flags & PARSE_FLAG_PREPROCESS));
+                macro_ptr = init_str.str;
+            }
+            end_macro();
+            restore_parse_state(&saved_parse_state);
+            break;
+        }
     case TOK_ASMDIR_org:
         {
             unsigned long n;
@@ -787,6 +825,16 @@ static int tcc_assemble_internal(TCCState *s1, int do_preprocess)
             opcode = tok;
             next();
             if (tok == ':') {
+                /* handle "extern void vide(void); __asm__("vide: ret");" as
+                "__asm__("globl vide\nvide: ret");" */
+                Sym *sym = sym_find(opcode);
+                if (sym && (sym->type.t & VT_EXTERN) && nocode_wanted) {
+                    sym = label_find(opcode);
+                    if (!sym) {
+                        sym = label_push(&s1->asm_labels, opcode, 0);
+                        sym->type.t = VT_VOID;
+                    }
+                }
                 /* new label */
                 asm_new_label(s1, opcode, 0);
                 next();

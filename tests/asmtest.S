@@ -38,7 +38,7 @@ mov %al, 0x10000
                 
 mov $1, %edx
 mov $1, %dx
-mov $1, %dl
+mov $1, %cl
 movb $2, 0x100(%ebx,%edx,2)
 movw $2, 0x100(%ebx,%edx,2)
 movl $2, 0x100(%ebx,%edx,2)
@@ -46,14 +46,32 @@ movl %eax, 0x100(%ebx,%edx,2)
 movl 0x100(%ebx,%edx,2), %edx
 movw %ax, 0x100(%ebx,%edx,2)
 
+movw $0x1122,%si
+movl $0x112233,%edx
+#ifdef __x86_64__
+mov $0x11223344,%rbx
+movq $0x11223344,%rbx
+mov $0x1122334455,%rbx
+movq $0x1122334455,%rbx
+movl $0x11334455,(%rbx)
+#endif
+
 mov %eax, 0x12(,%edx,2)
         
+#ifdef __i386__
 mov %cr3, %edx
 mov %ecx, %cr3
 movl %cr3, %eax
 movl %tr3, %eax
 movl %db3, %ebx
 movl %dr6, %eax
+#else
+mov %cr3, %rdx
+mov %rcx, %cr3
+movq %cr3, %rax
+movq %db3, %rbx
+movq %dr6, %rax
+#endif
 movl %fs, %ecx
 movl %ebx, %fs
 
@@ -68,19 +86,36 @@ movl %ebx, %fs
      movzb 0x1000, %eax
      movzb 0x1000, %ax
                 
+#ifdef __x86_64__
+     movzb 0x1000, %rax
+     movzbq 0x1000, %rbx
+     movsbq 0x1000, %rdx
+     movzwq 0x1000, %rdi
+     movswq 0x1000, %rdx
+#endif
         
+#ifdef __i386__
   pushl %eax
-  pushw %ax
   push %eax
   push %cs
+#else
+  pushq %rax
+  push %rax
+#endif
+  pushw %ax
   push %gs
   push $1
   push $100
                                                 
+#ifdef __i386__
   popl %eax
-  popw %ax
   pop %eax
   pop %ds
+#else
+  popq %rax
+  pop %rax
+#endif
+  popw %ax
   pop %fs
           
   xchg %eax, %ecx
@@ -111,11 +146,13 @@ movl %ebx, %fs
   leal 0x1000(%ebx), %ecx
   lea 0x1000(%ebx), %ecx
 
+#ifdef __i386__
   les 0x2000, %eax
   lds 0x2000, %ebx
+  lss 0x2000, %edx
+#endif
   lfs 0x2000, %ecx
   lgs 0x2000, %edx
-  lss 0x2000, %edx
 
 addl $0x123, %eax
 add $0x123, %ebx
@@ -195,7 +232,11 @@ shrd %eax, %edx
 L4:
 call 0x1000
 call L4
+#ifdef __i386__
 call *%eax
+#else
+call *%rax
+#endif
 call *0x1000
 call func1
 
@@ -204,19 +245,38 @@ call func1
 L5:
 L6:
 
+#ifdef __i386__
 lcall $0x100, $0x1000
+#else
+lcall *0x100
+lcall *(%rax)
+#endif
 
 jmp 0x1000
+jmp *(%edi)
+#ifdef __i386__
 jmp *%eax
+#else
+jmp *%rax
+#endif
 jmp *0x1000
 
+#ifdef __i386__
 ljmp $0x100, $0x1000
+#else
+ljmp *0x100
+ljmp *(%rdi)
+#endif
 
 ret
-retl
-
 ret $10
+#ifdef __i386__
+retl
 retl $10
+#else
+retq
+retq $10
+#endif
 
 lret
 
@@ -432,12 +492,18 @@ fucomip %st(5), %st
  cmovo 0x1000, %eax
  cmovs 0x1000, %eax
  cmovns %edx, %edi
+ cmovne %ax, %si
+#ifdef __x86_64__
+ cmovz %rdi,%rbx
+#endif
 
 int $3
 int $0x10
 
+#ifdef __i386__
     pusha
     popa
+#endif
     clc
     cld
     cli
@@ -445,19 +511,27 @@ int $0x10
     cmc
     lahf
     sahf
+#ifdef __i386__
     pushfl
     popfl
+#else
+    pushfq
+    popfq
+#endif
     pushf
     popf
     stc
     std
     sti
+#ifdef __i386__
     aaa
     aas
     daa
     das
     aad
     aam
+    into
+#endif
     cbw
     cwd
     cwde
@@ -468,7 +542,6 @@ int $0x10
     cltd
     leave
     int3
-    into
     iret
     rsm
     hlt
@@ -558,10 +631,12 @@ int $0x10
 
         
         
+#ifdef __i386__
     boundl %edx, 0x10000
     boundw %bx, 0x1000
-    
+
     arpl %bx, 0x1000
+#endif
     lar 0x1000, %eax
     lgdt 0x1000
     lidt 0x1000
@@ -579,15 +654,21 @@ int $0x10
     verr 0x1000
     verw 0x1000
   
+#ifdef __i386__
     push %ds
     pushw %ds
     pushl %ds
     pop %ds
     popw %ds
     popl %ds
+#endif
     fxsave 1(%ebx)
     fxrstor 1(%ecx)
+#ifdef __i386__
     pushl $1
+#else
+    pushq $1
+#endif
     pushw $1
     push $1
 

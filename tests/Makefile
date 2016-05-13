@@ -199,7 +199,7 @@ ex%: $(top_srcdir)/examples/ex%.c
 
 # tiny assembler testing
 asmtest.ref: asmtest.S
-	$(CC) -m32 -Wa,-W -o asmtest.ref.o -c asmtest.S
+	$(CC) -Wa,-W -o asmtest.ref.o -c asmtest.S
 	objdump -D asmtest.ref.o > asmtest.ref
 
 asmtest: asmtest.ref
@@ -250,6 +250,7 @@ cache: tcc_g
 # clean
 clean:
 	$(MAKE) -C tests2 $@
+	$(MAKE) -C pp $@
 	rm -vf *~ *.o *.a *.bin *.i *.ref *.out *.out? *.out?b *.cc \
 		*-cc *-tcc *.exe \
 		hello libtcc_test vla_test tcctest[1234] ex? tcc_g

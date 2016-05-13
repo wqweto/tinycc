@@ -19,7 +19,7 @@ endif
 
 TCC = $(TOP)/tcc $(TCCFLAGS)
 
-TESTS = $(patsubst %.c,%.test,$(wildcard *.c))
+TESTS = $(patsubst %.c,%.test,$(sort $(wildcard *.c)))
 
 # 34_array_assignment.test -- array assignment is not in C standard
 SKIP = 34_array_assignment.test
@@ -37,6 +37,9 @@ ifdef CONFIG_WIN32
 endif
 ifeq ($(ARCH),x86-64)
  SKIP += 73_arm64.test
+endif
+ifeq (,$(filter i386 x86-64,$(ARCH)))
+ SKIP += 85-asm-outside-function.test
 endif
 
 # Some tests might need arguments
