@@ -1,26 +1,18 @@
-#define Y(x) Z(x)
-#define X Y
-X(1)
-X(X(1))
-X(X(X(X(X(1)))))
+// insert a space between two tokens if otherwise they
+// would form a single token when read back
 
-#define A B
-#define B A
-return A + B;
+#define n(x) x
 
-#undef A
-#undef B
+return (n(long)n(double))d;
+return n(A)n(++)n(+)n(B);
+return n(A)n(+)n(++)n(B);
+return n(A)n(++)n(+)n(+)n(B);
 
-#define A B+1
-#define B A
-return A + B;
+// not a hex float
+return n(0x1E)n(-1);
 
-#define A1 B1+1
-#define B1 C1+2
-#define C1 A1+3
-return A1 + B1;
+// unlike gcc but correct
+XXX: return n(x)+n(x)-n(1)+n(1)-2;
 
-#define i() x
-#define n() 1
-i()i()n()n()i()
-i()+i()-n()+n()-
+// unlile gcc, but cannot appear in valid C
+XXX: return n(x)n(x)n(1)n(2)n(x);

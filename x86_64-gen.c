@@ -24,7 +24,7 @@
 
 /* number of available registers */
 #define NB_REGS         25
-#define NB_ASM_REGS     8
+#define NB_ASM_REGS     16
 
 /* a register can belong to several classes. The classes must be
    sorted from more general to more precise (see gv2() code which does
@@ -102,20 +102,6 @@ enum {
 #define MAX_ALIGN     16
 
 /******************************************************/
-/* ELF defines */
-
-#define EM_TCC_TARGET EM_X86_64
-
-/* relocation type for 32 bit data relocation */
-#define R_DATA_32   R_X86_64_32
-#define R_DATA_PTR  R_X86_64_64
-#define R_JMP_SLOT  R_X86_64_JUMP_SLOT
-#define R_COPY      R_X86_64_COPY
-
-#define ELF_START_ADDR 0x400000
-#define ELF_PAGE_SIZE  0x200000
-
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
 /******************************************************/
 #include "tcc.h"
@@ -156,9 +142,11 @@ static unsigned long func_sub_sp_offset;
 static int func_ret_sub;
 
 /* XXX: make it faster ? */
-void g(int c)
+ST_FUNC void g(int c)
 {
     int ind1;
+    if (nocode_wanted)
+        return;
     ind1 = ind + 1;
     if (ind1 > cur_text_section->data_allocated)
         section_realloc(cur_text_section, ind1);
@@ -166,7 +154,7 @@ void g(int c)
     ind = ind1;
 }
 
-void o(unsigned int c)
+ST_FUNC void o(unsigned int c)
 {
     while (c) {
         g(c);
@@ -174,13 +162,13 @@ void o(unsigned int c)
     }
 }
 
-void gen_le16(int v)
+ST_FUNC void gen_le16(int v)
 {
     g(v);
     g(v >> 8);
 }
 
-void gen_le32(int c)
+ST_FUNC void gen_le32(int c)
 {
     g(c);
     g(c >> 8);
@@ -188,7 +176,7 @@ void gen_le32(int c)
     g(c >> 24);
 }
 
-void gen_le64(int64_t c)
+ST_FUNC void gen_le64(int64_t c)
 {
     g(c);
     g(c >> 8);
@@ -200,7 +188,7 @@ void gen_le64(int64_t c)
     g(c >> 56);
 }
 
-void orex(int ll, int r, int r2, int b)
+static void orex(int ll, int r, int r2, int b)
 {
     if ((r & VT_VALMASK) >= VT_CONST)
         r = 0;
@@ -212,7 +200,7 @@ void orex(int ll, int r, int r2, int b)
 }
 
 /* output a symbol and patch all calls to it */
-void gsym_addr(int t, int a)
+ST_FUNC void gsym_addr(int t, int a)
 {
     while (t) {
         unsigned char *ptr = cur_text_section->data + t;
@@ -227,9 +215,6 @@ void gsym(int t)
     gsym_addr(t, ind);
 }
 
-/* psym is used to put an instruction with a data field which is a
-   reference to a symbol. It is in fact the same as oad ! */
-#define psym oad
 
 static int is64_type(int t)
 {
@@ -241,22 +226,22 @@ static int is64_type(int t)
 /* instruction + 4 bytes data. Return the address of the data */
 ST_FUNC int oad(int c, int s)
 {
-    int ind1;
-
+    int t;
+    if (nocode_wanted)
+        return s;
     o(c);
-    ind1 = ind + 4;
-    if (ind1 > cur_text_section->data_allocated)
-        section_realloc(cur_text_section, ind1);
-    write32le(cur_text_section->data + ind, s);
-    s = ind;
-    ind = ind1;
-    return s;
+    t = ind;
+    gen_le32(s);
+    return t;
 }
 
-ST_FUNC void gen_addr32(int r, Sym *sym, int c)
+/* generate jmp to a label */
+#define gjmp2(instr,lbl) oad(instr,lbl)
+
+ST_FUNC void gen_addr32(int r, Sym *sym, long c)
 {
     if (r & VT_SYM)
-        greloca(cur_text_section, sym, ind, R_X86_64_32, c), c=0;
+        greloca(cur_text_section, sym, ind, R_X86_64_32S, c), c=0;
     gen_le32(c);
 }
 
@@ -269,7 +254,7 @@ ST_FUNC void gen_addr64(int r, Sym *sym, int64_t c)
 }
 
 /* output constant with relocation if 'r & VT_SYM' is true */
-ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
+ST_FUNC void gen_addrpc32(int r, Sym *sym, long c)
 {
     if (r & VT_SYM)
         greloca(cur_text_section, sym, ind, R_X86_64_PC32, c-4), c=4;
@@ -363,6 +348,8 @@ void load(int r, SValue *sv)
     fr = sv->r;
     ft = sv->type.t & ~VT_DEFSIGN;
     fc = sv->c.i;
+    if (fc != sv->c.i && (fr & VT_SYM))
+      tcc_error("64 bit addend in load");
 
     ft &= ~(VT_VOLATILE | VT_CONSTANT);
 
@@ -396,6 +383,22 @@ void load(int r, SValue *sv)
             load(fr, &v1);
         }
         ll = 0;
+	/* Like GCC we can load from small enough properly sized
+	   structs and unions as well.
+	   XXX maybe move to generic operand handling, but should
+	   occur only with asm, so tccasm.c might also be a better place */
+	if ((ft & VT_BTYPE) == VT_STRUCT) {
+	    int align;
+	    switch (type_size(&sv->type, &align)) {
+		case 1: ft = VT_BYTE; break;
+		case 2: ft = VT_SHORT; break;
+		case 4: ft = VT_INT; break;
+		case 8: ft = VT_LLONG; break;
+		default:
+		    tcc_error("invalid aggregate type for register load");
+		    break;
+	    }
+	}
         if ((ft & VT_BTYPE) == VT_FLOAT) {
             b = 0x6e0f66;
             r = REG_VALUE(r); /* movd */
@@ -526,9 +529,11 @@ void store(int r, SValue *v)
     v = pe_getimport(v, &v2);
 #endif
 
+    fr = v->r & VT_VALMASK;
     ft = v->type.t;
     fc = v->c.i;
-    fr = v->r & VT_VALMASK;
+    if (fc != v->c.i && (fr & VT_SYM))
+      tcc_error("64 bit addend in store");
     ft &= ~(VT_VOLATILE | VT_CONSTANT);
     bt = ft & VT_BTYPE;
 
@@ -747,25 +752,21 @@ void gen_offs_sp(int b, int r, int d)
 ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int *regsize)
 {
     int size, align;
-    *regsize = 8;
     *ret_align = 1; // Never have to re-align return values for x86-64
+    *regsize = 8;
     size = type_size(vt, &align);
-    ret->ref = NULL;
-    if (size > 8) {
+    if (size > 8 || (size & (size - 1)))
         return 0;
-    } else if (size > 4) {
+    if (size == 8)
         ret->t = VT_LLONG;
-        return 1;
-    } else if (size > 2) {
+    else if (size == 4)
         ret->t = VT_INT;
-        return 1;
-    } else if (size > 1) {
+    else if (size == 2)
         ret->t = VT_SHORT;
-        return 1;
-    } else {
+    else
         ret->t = VT_BYTE;
-        return 1;
-    }
+    ret->ref = NULL;
+    return 1;
 }
 
 static int is_sse_float(int t) {
@@ -849,6 +850,8 @@ void gfunc_call(int nb_args)
             struct_size += size;
         } else {
             if (is_sse_float(vtop->type.t)) {
+		if (tcc_state->nosse)
+		  tcc_error("SSE disabled");
                 gv(RC_XMM0); /* only use one float register */
                 if (arg >= REGN) {
                     /* movq %xmm0, j*8(%rsp) */
@@ -893,6 +896,22 @@ void gfunc_call(int nb_args)
     }
     
     gcall_or_jmp(0);
+    /* other compilers don't clear the upper bits when returning char/short */
+    bt = vtop->type.ref->type.t & (VT_BTYPE | VT_UNSIGNED);
+    if (bt == (VT_BYTE | VT_UNSIGNED))
+        o(0xc0b60f);  /* movzbl %al, %eax */
+    else if (bt == VT_BYTE)
+        o(0xc0be0f); /* movsbl %al, %eax */
+    else if (bt == VT_SHORT)
+        o(0x98); /* cwtl */
+    else if (bt == (VT_SHORT | VT_UNSIGNED))
+        o(0xc0b70f);  /* movzbl %al, %eax */
+#if 0 /* handled in gen_cast() */
+    else if (bt == VT_INT)
+        o(0x9848); /* cltq */
+    else if (bt == (VT_INT | VT_UNSIGNED))
+        o(0xc089); /* mov %eax,%eax */
+#endif
     vtop--;
 }
 
@@ -943,6 +962,8 @@ void gfunc_prolog(CType *func_type)
             if (reg_param_index < REGN) {
                 /* save arguments passed by register */
                 if ((bt == VT_FLOAT) || (bt == VT_DOUBLE)) {
+		    if (tcc_state->nosse)
+		      tcc_error("SSE disabled");
                     o(0xd60f66); /* movq */
                     gen_modrm(reg_param_index, VT_LOCAL, NULL, addr);
                 } else {
@@ -1069,8 +1090,8 @@ static X86_64_Mode classify_x86_64_inner(CType *ty)
         
         return mode;
     }
-    
     assert(0);
+    return 0;
 }
 
 static X86_64_Mode classify_x86_64_arg(CType *ty, CType *ret, int *psize, int *palign, int *reg_count)
@@ -1189,6 +1210,9 @@ void gfunc_call(int nb_args)
         else if (mode == x86_64_mode_integer)
             nb_reg_args += reg_count;
     }
+
+    if (nb_sse_args && tcc_state->nosse)
+      tcc_error("SSE disabled but floating point arguments passed");
 
     /* arguments are collected in runs. Each run is a collection of 8-byte aligned arguments
        and ended by a 16-byte aligned argument. This is because, from the point of view of
@@ -1441,7 +1465,8 @@ void gfunc_call(int nb_args)
         }
     }
 
-    oad(0xb8, nb_sse_args < 8 ? nb_sse_args : 8); /* mov nb_sse_args, %eax */
+    if (vtop->type.ref->c != FUNC_NEW) /* implies FUNC_OLD or FUNC_ELLIPSIS */
+        oad(0xb8, nb_sse_args < 8 ? nb_sse_args : 8); /* mov nb_sse_args, %eax */
     gcall_or_jmp(0);
     if (args_size)
         gadd_sp(args_size);
@@ -1522,8 +1547,10 @@ void gfunc_prolog(CType *func_type)
         /* save all register passing arguments */
         for (i = 0; i < 8; i++) {
             loc -= 16;
-            o(0xd60f66); /* movq */
-            gen_modrm(7 - i, VT_LOCAL, NULL, loc);
+	    if (!tcc_state->nosse) {
+		o(0xd60f66); /* movq */
+		gen_modrm(7 - i, VT_LOCAL, NULL, loc);
+	    }
             /* movq $0, loc+8(%rbp) */
             o(0x85c748);
             gen_le32(loc + 8);
@@ -1553,6 +1580,8 @@ void gfunc_prolog(CType *func_type)
         mode = classify_x86_64_arg(type, NULL, &size, &align, &reg_count);
         switch (mode) {
         case x86_64_mode_sse:
+	    if (tcc_state->nosse)
+	        tcc_error("SSE disabled but floating point arguments used");
             if (sse_param_index + reg_count <= 8) {
                 /* save arguments passed by register */
                 loc -= reg_count * 8;
@@ -1641,7 +1670,7 @@ void gfunc_epilog(void)
         o(0x5250); /* save returned value, if any */
         greloc(cur_text_section, sym_data, ind + 1, R_386_32);
         oad(0xb8, 0); /* mov xxx, %rax */
-	o(0xc78948);  /* mov  %rax,%rdi ## first arg in %rdi, this must be ptr */
+        o(0xc78948);  /* mov %rax,%rdi # first arg in %rdi, this must be ptr */
         gen_static_call(TOK___bound_local_delete);
         o(0x585a); /* restore returned value, if any */
     }
@@ -1669,7 +1698,7 @@ void gfunc_epilog(void)
 /* generate a jump to a label */
 int gjmp(int t)
 {
-    return psym(0xe9, t);
+    return gjmp2(0xe9, t);
 }
 
 /* generate a jump to a fixed address */
@@ -1685,11 +1714,40 @@ void gjmp_addr(int a)
     }
 }
 
-/* generate a test. set 'inv' to invert test. Stack entry is popped */
-int gtst(int inv, int t)
+ST_FUNC void gtst_addr(int inv, int a)
 {
     int v = vtop->r & VT_VALMASK;
     if (v == VT_CMP) {
+	inv ^= (vtop--)->c.i;
+	a -= ind + 2;
+	if (a == (char)a) {
+	    g(inv - 32);
+	    g(a);
+	} else {
+	    g(0x0f);
+	    oad(inv - 16, a - 4);
+	}
+    } else if ((v & ~1) == VT_JMP) {
+	if ((v & 1) != inv) {
+	    gjmp_addr(a);
+	    gsym(vtop->c.i);
+	} else {
+	    gsym(vtop->c.i);
+	    o(0x05eb);
+	    gjmp_addr(a);
+	}
+	vtop--;
+    }
+}
+
+/* generate a test. set 'inv' to invert test. Stack entry is popped */
+ST_FUNC int gtst(int inv, int t)
+{
+    int v = vtop->r & VT_VALMASK;
+
+    if (nocode_wanted) {
+        ;
+    } else if (v == VT_CMP) {
         /* fast case : can jump directly since flags are set */
 	if (vtop->c.i & 0x100)
 	  {
@@ -1706,11 +1764,11 @@ int gtst(int inv, int t)
 	    else
 	      {
 	        g(0x0f);
-		t = psym(0x8a, t); /* jp t */
+		t = gjmp2(0x8a, t); /* jp t */
 	      }
 	  }
         g(0x0f);
-        t = psym((vtop->c.i - 16) ^ inv, t);
+        t = gjmp2((vtop->c.i - 16) ^ inv, t);
     } else if (v == VT_JMP || v == VT_JMPI) {
         /* && or || optimization */
         if ((v & 1) == inv) {
@@ -2228,7 +2286,6 @@ ST_FUNC void gen_vla_alloc(CType *type, int align) {
     vpush_global_sym(&func_old_type, TOK_alloca);
     vswap(); /* Move alloca ref past allocation size */
     gfunc_call(1);
-    vset(type, REG_IRET, 0);
 #else
     int r;
     r = gv(RC_INT); /* allocation size */

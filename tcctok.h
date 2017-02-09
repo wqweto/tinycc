@@ -117,10 +117,14 @@
      DEF(TOK_FASTCALL1, "fastcall")
      DEF(TOK_FASTCALL2, "__fastcall")
      DEF(TOK_FASTCALL3, "__fastcall__")
+
      DEF(TOK_MODE, "__mode__")
+     DEF(TOK_MODE_QI, "__QI__")
      DEF(TOK_MODE_DI, "__DI__")
      DEF(TOK_MODE_HI, "__HI__")
      DEF(TOK_MODE_SI, "__SI__")
+     DEF(TOK_MODE_word, "__word__")
+
      DEF(TOK_DLLEXPORT, "dllexport")
      DEF(TOK_DLLIMPORT, "dllimport")
      DEF(TOK_NORETURN1, "noreturn")
@@ -128,6 +132,7 @@
      DEF(TOK_VISIBILITY1, "visibility")
      DEF(TOK_VISIBILITY2, "__visibility__")
      DEF(TOK_builtin_types_compatible_p, "__builtin_types_compatible_p")
+     DEF(TOK_builtin_choose_expr, "__builtin_choose_expr")
      DEF(TOK_builtin_constant_p, "__builtin_constant_p")
      DEF(TOK_builtin_frame_address, "__builtin_frame_address")
      DEF(TOK_builtin_return_address, "__builtin_return_address")
@@ -238,10 +243,6 @@
      DEF(TOK___fixsfdi, "__fixsfdi")
      DEF(TOK___fixdfdi, "__fixdfdi")
      DEF(TOK___fixxfdi, "__fixxfdi")
-
- #ifndef COMMIT_4ad186c5ef61_IS_FIXED
-     DEF(TOK___tcc_cvt_ftol, "__tcc_cvt_ftol")
- #endif
 #endif
 
 #if defined TCC_TARGET_I386 || defined TCC_TARGET_X86_64
@@ -289,7 +290,6 @@
      DEF(TOK___bound_main_arg, "__bound_main_arg")
      DEF(TOK___bound_local_new, "__bound_local_new")
      DEF(TOK___bound_local_delete, "__bound_local_delete")
-     DEF(TOK___bound_init, "__bound_init")
 # ifdef TCC_TARGET_PE
      DEF(TOK_malloc, "malloc")
      DEF(TOK_free, "free")
@@ -305,7 +305,9 @@
  DEF_ASMDIR(byte)              /* must be first directive */
  DEF_ASMDIR(word)
  DEF_ASMDIR(align)
+ DEF_ASMDIR(balign)
  DEF_ASMDIR(p2align)
+ DEF_ASMDIR(set)
  DEF_ASMDIR(skip)
  DEF_ASMDIR(space)
  DEF_ASMDIR(string)
@@ -323,6 +325,8 @@
  DEF_ASMDIR(data)
  DEF_ASMDIR(bss)
  DEF_ASMDIR(previous)
+ DEF_ASMDIR(pushsection)
+ DEF_ASMDIR(popsection)
  DEF_ASMDIR(fill)
  DEF_ASMDIR(rept)
  DEF_ASMDIR(endr)

@@ -109,20 +109,6 @@ enum {
 #define MAX_ALIGN     8
 
 /******************************************************/
-/* ELF defines */
-
-#define EM_TCC_TARGET EM_C60
-
-/* relocation type for 32 bit data relocation */
-#define R_DATA_32   R_C60_32
-#define R_DATA_PTR  R_C60_32
-#define R_JMP_SLOT  R_C60_JMP_SLOT
-#define R_COPY      R_C60_COPY
-
-#define ELF_START_ADDR 0x00000400
-#define ELF_PAGE_SIZE  0x1000
-
-/******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
 /******************************************************/
 #include "tcc.h"
@@ -196,7 +182,8 @@ FILE *f = NULL;
 void C67_g(int c)
 {
     int ind1;
-
+    if (nocode_wanted)
+        return;
 #ifdef ASSEMBLY_LISTING_C67
     fprintf(f, " %08X", c);
 #endif
@@ -2052,6 +2039,8 @@ void gfunc_epilog(void)
 int gjmp(int t)
 {
     int ind1 = ind;
+    if (nocode_wanted)
+        return t;
 
     C67_MVKL(C67_A0, t);	//r=reg to load,  constant
     C67_MVKH(C67_A0, t);	//r=reg to load,  constant
@@ -2084,7 +2073,9 @@ int gtst(int inv, int t)
     int v, *p;
 
     v = vtop->r & VT_VALMASK;
-    if (v == VT_CMP) {
+    if (nocode_wanted) {
+        ;
+    } else if (v == VT_CMP) {
 	/* fast case : can jump directly since flags are set */
 	// C67 uses B2 sort of as flags register
 	ind1 = ind;

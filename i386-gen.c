@@ -21,7 +21,7 @@
 #ifdef TARGET_DEFS_ONLY
 
 /* number of available registers */
-#define NB_REGS         4
+#define NB_REGS         5
 #define NB_ASM_REGS     8
 
 /* a register can belong to several classes. The classes must be
@@ -33,6 +33,8 @@
 #define RC_ST0     0x0008 
 #define RC_ECX     0x0010
 #define RC_EDX     0x0020
+#define RC_EBX     0x0040
+
 #define RC_IRET    RC_EAX /* function return: integer register */
 #define RC_LRET    RC_EDX /* function return: second integer register */
 #define RC_FRET    RC_ST0 /* function return: float register */
@@ -42,6 +44,7 @@ enum {
     TREG_EAX = 0,
     TREG_ECX,
     TREG_EDX,
+    TREG_EBX,
     TREG_ST0,
     TREG_ESP = 4
 };
@@ -67,32 +70,22 @@ enum {
 /* maximum alignment (for aligned attribute support) */
 #define MAX_ALIGN     8
 
-
-#define psym oad
-
-/******************************************************/
-/* ELF defines */
-
-#define EM_TCC_TARGET EM_386
-
-/* relocation type for 32 bit data relocation */
-#define R_DATA_32   R_386_32
-#define R_DATA_PTR  R_386_32
-#define R_JMP_SLOT  R_386_JMP_SLOT
-#define R_COPY      R_386_COPY
-
-#define ELF_START_ADDR 0x08048000
-#define ELF_PAGE_SIZE  0x1000
+/* generate jmp to a label */
+#define gjmp2(instr,lbl) oad(instr,lbl)
 
 /******************************************************/
 #else /* ! TARGET_DEFS_ONLY */
 /******************************************************/
 #include "tcc.h"
 
+/* define to 1/0 to [not] have EBX as 4th register */
+#define USE_EBX 0
+
 ST_DATA const int reg_classes[NB_REGS] = {
     /* eax */ RC_INT | RC_EAX,
     /* ecx */ RC_INT | RC_ECX,
     /* edx */ RC_INT | RC_EDX,
+    /* ebx */ (RC_INT | RC_EBX) * USE_EBX,
     /* st0 */ RC_FLOAT | RC_ST0,
 };
 
@@ -100,12 +93,15 @@ static unsigned long func_sub_sp_offset;
 static int func_ret_sub;
 #ifdef CONFIG_TCC_BCHECK
 static addr_t func_bound_offset;
+static unsigned long func_bound_ind;
 #endif
 
 /* XXX: make it faster ? */
 ST_FUNC void g(int c)
 {
     int ind1;
+    if (nocode_wanted)
+        return;
     ind1 = ind + 1;
     if (ind1 > cur_text_section->data_allocated)
         section_realloc(cur_text_section, ind1);
@@ -151,34 +147,27 @@ ST_FUNC void gsym(int t)
     gsym_addr(t, ind);
 }
 
-/* psym is used to put an instruction with a data field which is a
-   reference to a symbol. It is in fact the same as oad ! */
-#define psym oad
-
 /* instruction + 4 bytes data. Return the address of the data */
 ST_FUNC int oad(int c, int s)
 {
-    int ind1;
-
+    int t;
+    if (nocode_wanted)
+        return s;
     o(c);
-    ind1 = ind + 4;
-    if (ind1 > cur_text_section->data_allocated)
-        section_realloc(cur_text_section, ind1);
-    write32le(cur_text_section->data + ind, s);
-    s = ind;
-    ind = ind1;
-    return s;
+    t = ind;
+    gen_le32(s);
+    return t;
 }
 
 /* output constant with relocation if 'r & VT_SYM' is true */
-ST_FUNC void gen_addr32(int r, Sym *sym, int c)
+ST_FUNC void gen_addr32(int r, Sym *sym, long c)
 {
     if (r & VT_SYM)
         greloc(cur_text_section, sym, ind, R_386_32);
     gen_le32(c);
 }
 
-ST_FUNC void gen_addrpc32(int r, Sym *sym, int c)
+ST_FUNC void gen_addrpc32(int r, Sym *sym, long c)
 {
     if (r & VT_SYM)
         greloc(cur_text_section, sym, ind, R_386_PC32);
@@ -354,6 +343,7 @@ static void gcall_or_jmp(int is_jmp)
 {
     int r;
     if ((vtop->r & (VT_VALMASK | VT_LVAL)) == VT_CONST) {
+        int rt;
         /* constant case */
         if (vtop->r & VT_SYM) {
             /* relocation case */
@@ -365,6 +355,30 @@ static void gcall_or_jmp(int is_jmp)
                           ind + 1, R_386_PC32, 0);
         }
         oad(0xe8 + is_jmp, vtop->c.i - 4); /* call/jmp im */
+        /* extend the return value to the whole register if necessary
+           visual studio and gcc do not always set the whole eax register
+           when assigning the return value of a function  */
+        rt = vtop->type.ref->type.t;
+        switch (rt & VT_BTYPE) {
+            case VT_BYTE:
+                if (rt & VT_UNSIGNED) {
+                    o(0xc0b60f); /* movzx %al, %eax */
+                }
+                else {
+                    o(0xc0be0f); /* movsx %al, %eax */
+                }
+                break;
+            case VT_SHORT:
+                if (rt & VT_UNSIGNED) {
+                    o(0xc0b70f); /* movzx %ax, %eax */
+                }
+                else {
+                    o(0xc0bf0f); /* movsx %ax, %eax */
+                }
+                break;
+            default:
+                break;
+        }
     } else {
         /* otherwise, indirect call */
         r = gv(RC_INT);
@@ -382,21 +396,21 @@ ST_FUNC int gfunc_sret(CType *vt, int variadic, CType *ret, int *ret_align, int 
 {
 #ifdef TCC_TARGET_PE
     int size, align;
-
     *ret_align = 1; // Never have to re-align return values for x86
     *regsize = 4;
     size = type_size(vt, &align);
-    if (size > 8) {
+    if (size > 8 || (size & (size - 1)))
         return 0;
-    } else if (size > 4) {
-        ret->ref = NULL;
+    if (size == 8)
         ret->t = VT_LLONG;
-        return 1;
-    } else {
-        ret->ref = NULL;
+    else if (size == 4)
         ret->t = VT_INT;
-        return 1;
-    }
+    else if (size == 2)
+        ret->t = VT_SHORT;
+    else
+        ret->t = VT_BYTE;
+    ret->ref = NULL;
+    return 1;
 #else
     *ret_align = 1; // Never have to re-align return values for x86
     return 0;
@@ -493,9 +507,9 @@ ST_FUNC void gfunc_call(int nb_args)
 }
 
 #ifdef TCC_TARGET_PE
-#define FUNC_PROLOG_SIZE 10
+#define FUNC_PROLOG_SIZE (10 + USE_EBX)
 #else
-#define FUNC_PROLOG_SIZE 9
+#define FUNC_PROLOG_SIZE (9 + USE_EBX)
 #endif
 
 /* generate function prolog of type 't' */
@@ -533,7 +547,8 @@ ST_FUNC void gfunc_prolog(CType *func_type)
     func_var = (sym->c == FUNC_ELLIPSIS);
 #ifdef TCC_TARGET_PE
     size = type_size(&func_vt,&align);
-    if (((func_vt.t & VT_BTYPE) == VT_STRUCT) && (size > 8)) {
+    if (((func_vt.t & VT_BTYPE) == VT_STRUCT)
+        && (size > 8 || (size & (size - 1)))) {
 #else
     if ((func_vt.t & VT_BTYPE) == VT_STRUCT) {
 #endif
@@ -579,9 +594,10 @@ ST_FUNC void gfunc_prolog(CType *func_type)
 #ifdef CONFIG_TCC_BCHECK
     /* leave some room for bound checking code */
     if (tcc_state->do_bounds_check) {
+        func_bound_offset = lbounds_section->data_offset;
+        func_bound_ind = ind;
         oad(0xb8, 0); /* lbound section pointer */
         oad(0xb8, 0); /* call to function */
-        func_bound_offset = lbounds_section->data_offset;
     }
 #endif
 }
@@ -597,30 +613,39 @@ ST_FUNC void gfunc_epilog(void)
         addr_t saved_ind;
         addr_t *bounds_ptr;
         Sym *sym_data;
+
         /* add end of table info */
         bounds_ptr = section_ptr_add(lbounds_section, sizeof(addr_t));
         *bounds_ptr = 0;
+
         /* generate bound local allocation */
         saved_ind = ind;
-        ind = func_sub_sp_offset;
+        ind = func_bound_ind;
         sym_data = get_sym_ref(&char_pointer_type, lbounds_section, 
                                func_bound_offset, lbounds_section->data_offset);
         greloc(cur_text_section, sym_data,
                ind + 1, R_386_32);
         oad(0xb8, 0); /* mov %eax, xxx */
         gen_static_call(TOK___bound_local_new);
-
         ind = saved_ind;
+
         /* generate bound check local freeing */
         o(0x5250); /* save returned value, if any */
-        greloc(cur_text_section, sym_data,
-               ind + 1, R_386_32);
+        greloc(cur_text_section, sym_data, ind + 1, R_386_32);
         oad(0xb8, 0); /* mov %eax, xxx */
         gen_static_call(TOK___bound_local_delete);
-
         o(0x585a); /* restore returned value, if any */
     }
 #endif
+
+    /* align local size to word & save local variables */
+    v = (-loc + 3) & -4;
+
+#if USE_EBX
+    o(0x8b);
+    gen_modrm(TREG_EBX, VT_LOCAL, NULL, -(v+4));
+#endif
+
     o(0xc9); /* leave */
     if (func_ret_sub == 0) {
         o(0xc3); /* ret */
@@ -629,9 +654,6 @@ ST_FUNC void gfunc_epilog(void)
         g(func_ret_sub);
         g(func_ret_sub >> 8);
     }
-    /* align local size to word & save local variables */
-    
-    v = (-loc + 3) & -4; 
     saved_ind = ind;
     ind = func_sub_sp_offset - FUNC_PROLOG_SIZE;
 #ifdef TCC_TARGET_PE
@@ -644,17 +666,18 @@ ST_FUNC void gfunc_epilog(void)
         o(0xe58955);  /* push %ebp, mov %esp, %ebp */
         o(0xec81);  /* sub esp, stacksize */
         gen_le32(v);
-#if FUNC_PROLOG_SIZE == 10
+#ifdef TCC_TARGET_PE
         o(0x90);  /* adjust to FUNC_PROLOG_SIZE */
 #endif
     }
+    o(0x53 * USE_EBX); /* push ebx */
     ind = saved_ind;
 }
 
 /* generate a jump to a label */
 ST_FUNC int gjmp(int t)
 {
-    return psym(0xe9, t);
+    return gjmp2(0xe9, t);
 }
 
 /* generate a jump to a fixed address */
@@ -670,14 +693,42 @@ ST_FUNC void gjmp_addr(int a)
     }
 }
 
+ST_FUNC void gtst_addr(int inv, int a)
+{
+    int v = vtop->r & VT_VALMASK;
+    if (v == VT_CMP) {
+	inv ^= (vtop--)->c.i;
+	a -= ind + 2;
+	if (a == (char)a) {
+	    g(inv - 32);
+	    g(a);
+	} else {
+	    g(0x0f);
+	    oad(inv - 16, a - 4);
+	}
+    } else if ((v & ~1) == VT_JMP) {
+	if ((v & 1) != inv) {
+	    gjmp_addr(a);
+	    gsym(vtop->c.i);
+	} else {
+	    gsym(vtop->c.i);
+	    o(0x05eb);
+	    gjmp_addr(a);
+	}
+	vtop--;
+    }
+}
+
 /* generate a test. set 'inv' to invert test. Stack entry is popped */
 ST_FUNC int gtst(int inv, int t)
 {
     int v = vtop->r & VT_VALMASK;
-    if (v == VT_CMP) {
+    if (nocode_wanted) {
+        ;
+    } else if (v == VT_CMP) {
         /* fast case : can jump directly since flags are set */
         g(0x0f);
-        t = psym((vtop->c.i - 16) ^ inv, t);
+        t = gjmp2((vtop->c.i - 16) ^ inv, t);
     } else if (v == VT_JMP || v == VT_JMPI) {
         /* && or || optimization */
         if ((v & 1) == inv) {
@@ -716,9 +767,9 @@ ST_FUNC void gen_opi(int op)
             c = vtop->c.i;
             if (c == (char)c) {
                 /* generate inc and dec for smaller code */
-                if (c==1 && opc==0) {
+                if (c==1 && opc==0 && op != TOK_ADDC1) {
                     o (0x40 | r); // inc
-                } else if (c==1 && opc==5) {
+                } else if (c==1 && opc==5 && op != TOK_SUBC1) {
                     o (0x48 | r); // dec
                 } else {
                     o(0x83);
@@ -810,6 +861,8 @@ ST_FUNC void gen_opi(int op)
         fr = vtop[0].r;
         vtop--;
         save_reg(TREG_EDX);
+        /* save EAX too if used otherwise */
+        save_reg_upstack(TREG_EAX, 1);
         if (op == TOK_UMULL) {
             o(0xf7); /* mul fr */
             o(0xe0 + fr);
@@ -985,28 +1038,6 @@ ST_FUNC void gen_cvt_itof(int t)
 /* convert fp to int 't' type */
 ST_FUNC void gen_cvt_ftoi(int t)
 {
- #ifndef COMMIT_4ad186c5ef61_IS_FIXED
-    /* a good version but it takes a more time to execute */
-    gv(RC_FLOAT);
-    save_reg(TREG_EAX);
-    save_reg(TREG_EDX);
-    gen_static_call(TOK___tcc_cvt_ftol);
-    vtop->r = TREG_EAX; /* mark reg as used */
-    if (t == VT_LLONG)
-        vtop->r2 = TREG_EDX;
- #else
-    /* a new version with a bug: t2a = 44100312 */
-    /*
-    #include<stdio.h>
-    int main() {
-	int t1 = 176401255;
-	float f = 0.25f;
-	int t2a = (int)(t1 * f); // must be 44100313
-	int t2b = (int)(t1 * (float)0.25f);
-	printf("t2a=%d t2b=%d \n",t2a,t2b);
-	return 0;
-    }
-    */
     int bt = vtop->type.t & VT_BTYPE;
     if (bt == VT_FLOAT)
         vpush_global_sym(&func_old_type, TOK___fixsfdi);
@@ -1019,7 +1050,6 @@ ST_FUNC void gen_cvt_ftoi(int t)
     vpushi(0);
     vtop->r = REG_IRET;
     vtop->r2 = REG_LRET;
- #endif
 }
 
 /* convert from one floating point type to another */
